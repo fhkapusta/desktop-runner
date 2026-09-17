@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
@@ -15,16 +15,6 @@ namespace DesktopRunnerApp
 {
     static class Program
     {
-        public static void Log(string msg)
-        {
-            try
-            {
-                string p = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "debug.log");
-                File.AppendAllText(p, DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff") + " " + msg + Environment.NewLine);
-            }
-            catch { }
-        }
-
         private const string MutexName = "DesktopRunner_SingleInstance_Mutex_desktop2_local";
         private const string StopEventName = "DesktopRunner_StopEvent_desktop2_local";
 
@@ -32,8 +22,7 @@ namespace DesktopRunnerApp
         static void Main(string[] args)
         {
             Application.EnableVisualStyles();
-            Application.SetCompatibleTextRenderingDefault(false);
-            Log("Program.Main started, args: " + (args != null ? string.Join(" ", args) : "none"));
+            Application.SetCompatibleTextRenderingDefault(false);
 
             // Handle /stop command
             if (args != null && args.Length > 0)
@@ -53,12 +42,21 @@ namespace DesktopRunnerApp
                 {
                     if (!isNewInstance)
                     {
-                        Log("Mutex not acquired, isNewInstance=false");
-                        MessageBox.Show(
-                            "Desktop Runner вже запущений.\nІконка знаходиться в області сповіщень біля годинника (системний трей).\nЩоб зупинити, виконайте: DesktopRunner.exe /stop або запустіть stop.bat",
-                            "Desktop Runner",
-                            MessageBoxButtons.OK,
-                            MessageBoxIcon.Information);
+                        DialogResult action = ShowAlreadyRunningDialog();
+                        if (action == DialogResult.Abort) // Stop
+                        {
+                            StopRunningInstances();
+                        }
+                        else if (action == DialogResult.Retry) // Restart
+                        {
+                            StopRunningInstances();
+                            Thread.Sleep(500);
+                            try
+                            {
+                                Process.Start(Application.ExecutablePath);
+                            }
+                            catch { }
+                        }
                         return;
                     }
 
@@ -77,8 +75,7 @@ namespace DesktopRunnerApp
                             {
                                 if (form != null && !form.IsDisposed)
                                 {
-                                    Log("stopEvent signaled! timedOut=" + timedOut);
-                                    form.BeginInvoke(new Action(() => form.CloseApp("stopEvent")));
+                                    form.BeginInvoke(new Action(() => form.CloseApp()));
                                 }
                             }
                             catch { }
@@ -92,6 +89,78 @@ namespace DesktopRunnerApp
             {
                 try { File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "crash.log"), ex.ToString()); } catch { }
             }
+        }
+
+        private static DialogResult ShowAlreadyRunningDialog()
+        {
+            Form dlg = new Form
+            {
+                Text = "Desktop Runner",
+                ClientSize = new Size(425, 145),
+                StartPosition = FormStartPosition.CenterScreen,
+                FormBorderStyle = FormBorderStyle.FixedDialog,
+                MaximizeBox = false,
+                MinimizeBox = false,
+                ShowInTaskbar = true,
+                Font = new Font("Segoe UI", 9f)
+            };
+
+            try
+            {
+                Icon appIcon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
+                if (appIcon != null) dlg.Icon = appIcon;
+            }
+            catch { }
+
+            PictureBox iconBox = new PictureBox
+            {
+                Location = new Point(20, 22),
+                Size = new Size(32, 32),
+                SizeMode = PictureBoxSizeMode.CenterImage,
+                Image = SystemIcons.Information.ToBitmap()
+            };
+            dlg.Controls.Add(iconBox);
+
+            Label lbl = new Label
+            {
+                Location = new Point(65, 18),
+                Size = new Size(345, 65),
+                Text = "Desktop Runner is already running.\n\nThe application icon is in the system tray near the clock.\nWhat would you like to do?",
+                AutoSize = false
+            };
+            dlg.Controls.Add(lbl);
+
+            Button btnStop = new Button
+            {
+                Text = "Stop",
+                Location = new Point(110, 95),
+                Size = new Size(95, 30),
+                DialogResult = DialogResult.Abort
+            };
+            dlg.Controls.Add(btnStop);
+
+            Button btnRestart = new Button
+            {
+                Text = "Restart",
+                Location = new Point(215, 95),
+                Size = new Size(95, 30),
+                DialogResult = DialogResult.Retry
+            };
+            dlg.Controls.Add(btnRestart);
+
+            Button btnClose = new Button
+            {
+                Text = "Close",
+                Location = new Point(320, 95),
+                Size = new Size(95, 30),
+                DialogResult = DialogResult.Cancel
+            };
+            dlg.Controls.Add(btnClose);
+
+            dlg.CancelButton = btnClose;
+            dlg.AcceptButton = btnRestart;
+
+            return dlg.ShowDialog();
         }
 
         [DllImport("kernel32.dll", SetLastError = true)]
@@ -175,11 +244,11 @@ namespace DesktopRunnerApp
 
             if (stopped)
             {
-                PrintConsoleMessage("[OK] Desktop Runner успішно зупинено.");
+                PrintConsoleMessage("[OK] Desktop Runner successfully stopped.");
             }
             else
             {
-                PrintConsoleMessage("[INFO] Процес Desktop Runner не знайдено (не був запущений).");
+                PrintConsoleMessage("[INFO] Desktop Runner process not found (not running).");
             }
 
             FreeConsole();
@@ -351,19 +420,6 @@ namespace DesktopRunnerApp
             };
         }
 
-        
-        protected override void OnFormClosing(FormClosingEventArgs e)
-        {
-            Program.Log("OnFormClosing! CloseReason=" + e.CloseReason + ", Cancel=" + e.Cancel);
-            base.OnFormClosing(e);
-        }
-
-        protected override void OnFormClosed(FormClosedEventArgs e)
-        {
-            Program.Log("OnFormClosed! CloseReason=" + e.CloseReason);
-            base.OnFormClosed(e);
-        }
-
         protected override CreateParams CreateParams
         {
             get
@@ -394,19 +450,19 @@ namespace DesktopRunnerApp
 
             trayMenu.Items.Add(new ToolStripSeparator());
 
-            var reloadItem = new ToolStripMenuItem("Оновити сторінку (F5)", null, (s, e) => ReloadPage());
+            var reloadItem = new ToolStripMenuItem("Reload Page (F5)", null, (s, e) => ReloadPage());
             trayMenu.Items.Add(reloadItem);
 
-            var googleAuthItem = new ToolStripMenuItem("Увійти в Google Акаунт (Календар)...", null, (s, e) => OpenGoogleSignInWindow());
+            var googleAuthItem = new ToolStripMenuItem("Sign in to Google Account (Calendar)...", null, (s, e) => OpenGoogleSignInWindow());
             trayMenu.Items.Add(googleAuthItem);
 
-            var openBrowserItem = new ToolStripMenuItem("Відкрити у браузері", null, (s, e) =>
+            var openBrowserItem = new ToolStripMenuItem("Open in Browser", null, (s, e) =>
             {
                 try { Process.Start(config.Url); } catch { }
             });
             trayMenu.Items.Add(openBrowserItem);
 
-            var devToolsItem = new ToolStripMenuItem("Інструменти розробника (F12)", null, (s, e) =>
+            var devToolsItem = new ToolStripMenuItem("Developer Tools (F12)", null, (s, e) =>
             {
                 if (webView != null && webView.CoreWebView2 != null)
                 {
@@ -415,15 +471,18 @@ namespace DesktopRunnerApp
             });
             trayMenu.Items.Add(devToolsItem);
 
-            var openConfigItem = new ToolStripMenuItem("Налаштування (config.ini)", null, (s, e) =>
+            var openConfigItem = new ToolStripMenuItem("Settings (config.ini)", null, (s, e) =>
             {
                 try { Process.Start("notepad.exe", iniFilePath); } catch { }
             });
             trayMenu.Items.Add(openConfigItem);
 
+            var aboutItem = new ToolStripMenuItem("About Desktop Runner...", null, (s, e) => ShowAboutDialog());
+            trayMenu.Items.Add(aboutItem);
+
             trayMenu.Items.Add(new ToolStripSeparator());
 
-            var exitItem = new ToolStripMenuItem("Закрити Desktop Runner", null, (s, e) =>
+            var exitItem = new ToolStripMenuItem("Exit Desktop Runner", null, (s, e) =>
             {
                 CloseApp();
             });
@@ -452,6 +511,101 @@ namespace DesktopRunnerApp
             trayIcon.DoubleClick += (s, e) => ReloadPage();
         }
 
+        
+        private void ShowAboutDialog()
+        {
+            try
+            {
+                using (Form dlg = new Form
+                {
+                    Text = "About Desktop Runner",
+                    ClientSize = new Size(390, 170),
+                    StartPosition = FormStartPosition.CenterScreen,
+                    FormBorderStyle = FormBorderStyle.FixedDialog,
+                    MaximizeBox = false,
+                    MinimizeBox = false,
+                    ShowInTaskbar = true,
+                    Font = new Font("Segoe UI", 9f),
+                    Icon = this.Icon
+                })
+                {
+                    PictureBox iconBox = new PictureBox
+                    {
+                        Location = new Point(25, 22),
+                        Size = new Size(48, 48),
+                        SizeMode = PictureBoxSizeMode.CenterImage
+                    };
+
+                    try
+                    {
+                        if (this.Icon != null)
+                        {
+                            using (Icon ico48 = new Icon(this.Icon, new Size(48, 48)))
+                            {
+                                iconBox.Image = ico48.ToBitmap();
+                            }
+                        }
+                    }
+                    catch
+                    {
+                        iconBox.Image = this.Icon != null ? this.Icon.ToBitmap() : SystemIcons.Application.ToBitmap();
+                    }
+                    dlg.Controls.Add(iconBox);
+
+                    Label lblTitle = new Label
+                    {
+                        Location = new Point(88, 20),
+                        Size = new Size(275, 26),
+                        Text = "Desktop Runner",
+                        Font = new Font("Segoe UI", 12f, FontStyle.Bold)
+                    };
+                    dlg.Controls.Add(lblTitle);
+
+                    Label lblDesc = new Label
+                    {
+                        Location = new Point(89, 47),
+                        Size = new Size(275, 20),
+                        Text = "WebView2 Windows Desktop Host",
+                        ForeColor = Color.DimGray,
+                        Font = new Font("Segoe UI", 8.5f)
+                    };
+                    dlg.Controls.Add(lblDesc);
+
+                    LinkLabel linkGit = new LinkLabel
+                    {
+                        Location = new Point(89, 73),
+                        Size = new Size(285, 22),
+                        Text = "https://github.com/fhkapusta/desktop-runner",
+                        Font = new Font("Segoe UI", 9f),
+                        LinkColor = Color.FromArgb(0, 102, 204),
+                        ActiveLinkColor = Color.FromArgb(0, 153, 255),
+                        Cursor = Cursors.Hand
+                    };
+                    linkGit.LinkClicked += (s, e) =>
+                    {
+                        try { Process.Start("https://github.com/fhkapusta/desktop-runner"); } catch { }
+                    };
+                    dlg.Controls.Add(linkGit);
+
+                    Button btnClose = new Button
+                    {
+                        Text = "Close",
+                        Location = new Point(285, 120),
+                        Size = new Size(80, 28),
+                        DialogResult = DialogResult.OK
+                    };
+                    dlg.Controls.Add(btnClose);
+
+                    dlg.AcceptButton = btnClose;
+                    dlg.CancelButton = btnClose;
+
+                    dlg.ShowDialog();
+                }
+            }
+            catch { }
+        }
+
+
         private void OpenGoogleSignInWindow()
         {
             try
@@ -459,8 +613,8 @@ namespace DesktopRunnerApp
                 if (currentEnv == null)
                 {
                     MessageBox.Show(
-                        "Середовище WebView2 ще завантажується. Спробуйте через кілька секунд.",
-                        "Зачекайте",
+                        "WebView2 environment is still loading. Please try again in a few seconds.",
+                        "Please Wait",
                         MessageBoxButtons.OK,
                         MessageBoxIcon.Information);
                     return;
@@ -468,7 +622,7 @@ namespace DesktopRunnerApp
 
                 Form authForm = new Form
                 {
-                    Text = "Вхід у Google Акаунт (Google Calendar)",
+                    Text = "Sign in to Google Account (Google Calendar)",
                     Width = 650,
                     Height = 720,
                     StartPosition = FormStartPosition.CenterScreen,
@@ -504,7 +658,7 @@ namespace DesktopRunnerApp
                     }
                     catch (Exception ex)
                     {
-                        MessageBox.Show("Помилка відкриття форми авторизації Google:\n" + ex.Message, "Помилка", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        MessageBox.Show("Failed to open Google sign-in window:\n" + ex.Message, "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
                     }
                 };
 
@@ -513,7 +667,7 @@ namespace DesktopRunnerApp
             }
             catch (Exception ex)
             {
-                MessageBox.Show("Помилка: " + ex.Message, "Помилка", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                MessageBox.Show("Error: " + ex.Message, "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
 
@@ -933,7 +1087,7 @@ namespace DesktopRunnerApp
                         {
                             popupForm = new Form
                             {
-                                Text = "Google Calendar - Авторизація",
+                                Text = "Google Calendar - Authentication",
                                 ShowInTaskbar = true,
                                 StartPosition = FormStartPosition.CenterScreen,
                                 FormBorderStyle = FormBorderStyle.Sizable,
@@ -1044,8 +1198,8 @@ namespace DesktopRunnerApp
             catch (Exception ex)
             {
                 MessageBox.Show(
-                    "Помилка ініціалізації WebView2:\n" + ex.Message + "\n\nПереконайтеся, що встановлено Microsoft Edge WebView2 Runtime.",
-                    "Помилка Desktop Runner",
+                    "WebView2 initialization error:\n" + ex.Message + "\n\nPlease ensure Microsoft Edge WebView2 Runtime is installed.",
+                    "Desktop Runner Error",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Error);
             }
@@ -1059,9 +1213,8 @@ namespace DesktopRunnerApp
             }
         }
 
-        public void CloseApp(string reason = "manual")
+        public void CloseApp()
         {
-            Program.Log("CloseApp called! reason: " + reason + "\r\nStack: " + Environment.StackTrace);
             isExiting = true;
             Cleanup();
             if (trayIcon != null)
